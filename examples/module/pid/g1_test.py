@@ -6,10 +6,9 @@ import pypose as pp
 import matplotlib.pyplot as plt
 from torch.linalg import cross
 # from pypose.module.pid import PID
-from pypose.lietensor.basics import vec2skew
 import torch
 from torch import nn
-
+from pypose.lietensor.basics import vec2skew
 
 class PID(nn.Module):
 
@@ -150,9 +149,12 @@ class GeometricController(torch.nn.Module):
         des_acc = torch.unsqueeze(ref_state[6:9], 1)
         des_acc_dot = torch.unsqueeze(ref_state[9:12], 1)
         des_acc_ddot = torch.unsqueeze(ref_state[12:15], 1)
-        des_b1 = torch.unsqueeze(ref_state[15:18], 1)
-        des_b1_dot = torch.unsqueeze(ref_state[18:21], 1)
-        des_b1_ddot = torch.unsqueeze(ref_state[21:24], 1)
+        des_acc_dddot = torch.unsqueeze(ref_state[15:18], 1)
+        des_acc_ddddot = torch.unsqueeze(ref_state[18:21], 1)
+        des_b1 = torch.unsqueeze(ref_state[21:24], 1)
+        des_b1_dot = torch.unsqueeze(ref_state[24:27], 1)
+        des_b1_ddot = torch.unsqueeze(ref_state[27:30], 1)
+        des_b1_dddot = torch.unsqueeze(ref_state[30:33], 1)
 
         # extract specific state from state tensor
         position = torch.unsqueeze(state[0:3], 1)
@@ -178,61 +180,105 @@ class GeometricController(torch.nn.Module):
         err_vel_dot = self.g * self.e3 - thrust_des / self.m * b3 - des_acc
         des_b3_dot = - kp * (vel - des_vel) - kv * err_vel_dot + self.m * des_acc_dot
 
-        # calculate des_b3, des_b3_dot, des_b3_ddot
+        # calculate des_b3, des_b3_dot, des_b3_ddot, des_b3_dddot, des_b3_ddddot
         b3_dot = pose_Rwb @ vec2skew(torch.squeeze(angular_vel)) @ self.e3
         thrust_dot = torch.squeeze(- des_b3_dot.T @ b3 - des_b3.T @ b3_dot)
         err_vel_ddot = (-thrust_dot * b3 - thrust_des * b3_dot) / self.m - des_acc_dot
         des_b3_ddot = -kp * err_vel_dot - kv * err_vel_ddot + self.m * des_acc_ddot
 
+        b3_ddot = pose_Rwb @ vec2skew(torch.squeeze(angular_vel)) @ vec2skew(torch.squeeze(angular_vel)) @ self.e3
+        thrust_ddot = torch.squeeze(- des_b3_ddot.T @ b3 - 2 * des_b3_dot.T @ b3_dot - des_b3.T @ b3_ddot)
+        err_vel_dddot = (-thrust_ddot * b3 - 2 * thrust_dot * b3_dot - thrust_des * b3_ddot) / self.m - des_acc_dddot
+        des_b3_dddot = -kp * err_vel_ddot - kv * err_vel_dddot + self.m * des_acc_dddot
+
+        b3_dddot = pose_Rwb @ vec2skew(torch.squeeze(angular_vel)) @ vec2skew(torch.squeeze(angular_vel)) @ vec2skew(torch.squeeze(angular_vel)) @ self.e3
+        thrust_dddot = torch.squeeze(- des_b3_dddot.T @ b3 - 3 * des_b3_ddot.T @ b3_dot - 3 * des_b3_dot.T @ b3_ddot - des_b3.T @ b3_dddot)
+        err_vel_ddddot = (-thrust_dddot * b3 - 3 * thrust_ddot * b3_dot - 3 * thrust_dot * b3_ddot - thrust_des * b3_dddot) / self.m - des_acc_ddddot
+        des_b3_ddddot = -kp * err_vel_dddot - kv * err_vel_ddddot + self.m * des_acc_ddddot
+
         des_b3 = -des_b3 / torch.norm(des_b3)
         des_b3_dot = -des_b3_dot / torch.norm(des_b3_dot)
         des_b3_ddot = -des_b3_ddot / torch.norm(des_b3_ddot)
+        des_b3_dddot = -des_b3_dddot / torch.norm(des_b3_dddot)
+        des_b3_ddddot = -des_b3_ddddot / torch.norm(des_b3_ddddot)
 
-        # calculate des_b2, des_b2_dot, des_b3_ddot
+        # calculate des_b2, des_b2_dot, des_b2_ddot, des_b2_dddot, des_b2_ddddot
         des_b2 = cross(des_b3, des_b1, dim=0)
         des_b2_dot = cross(des_b3_dot, des_b1, dim=0) + cross(des_b3, des_b1_dot, dim=0)
         des_b2_ddot = cross(des_b3_ddot, des_b1, dim=0) \
             + 2*cross(des_b3_dot, des_b1_dot, dim=0) \
             + cross(des_b3, des_b1_ddot, dim=0)
-        des_b2 = des_b2 / torch.norm(des_b2)
-        des_b2_dot = des_b2 / torch.norm(des_b2_dot)
-        des_b2_ddot = des_b2 / torch.norm(des_b2_ddot)
+        des_b2_dddot = cross(des_b3_dddot, des_b1, dim=0) \
+            + 3 * cross(des_b3_ddot, des_b1_dot, dim=0) \
+            + 3 * cross(des_b3_dot, des_b1_ddot, dim=0) \
+            + cross(des_b3, des_b1_dddot, dim=0)
+        des_b2_ddddot = cross(des_b3_ddddot, des_b1, dim=0) \
+            + 4 * cross(des_b3_dddot, des_b1_dot, dim=0) \
+            + 6 * cross(des_b3_ddot, des_b1_ddot, dim=0) \
+            + 4 * cross(des_b3_dot, des_b1_dddot, dim=0)
 
-        # calculate des_b1, des_b1_dot, des_b1_ddot
+        des_b2 = des_b2 / torch.norm(des_b2)
+        des_b2_dot = des_b2_dot / torch.norm(des_b2_dot)
+        des_b2_ddot = des_b2_ddot / torch.norm(des_b2_ddot)
+        des_b2_dddot = des_b2_dddot / torch.norm(des_b2_dddot)
+        des_b2_ddddot = des_b2_ddddot / torch.norm(des_b2_ddddot)
+
+        # calculate des_b1, des_b1_dot, des_b1_ddot, des_b1_dddot, des_b1_ddddot
         des_b1 = cross(des_b2, des_b3, dim=0)
         des_b1_dot = cross(des_b2_dot, des_b3, dim=0) + cross(des_b2, des_b3_dot, dim=0)
         des_b1_ddot = cross(des_b2_ddot, des_b3, dim=0) \
             + 2 * cross(des_b2_dot, des_b3_dot, dim=0) \
             + cross(des_b2, des_b3_ddot, dim=0)
-        des_b2 = des_b2 / torch.norm(des_b2)
-        des_b1_dot = des_b2 / torch.norm(des_b1_dot)
-        des_b1_ddot = des_b2 / torch.norm(des_b1_ddot)
+        des_b1_dddot = cross(des_b2_dddot, des_b3, dim=0) \
+            + 3 * cross(des_b2_ddot, des_b3_dot, dim=0) \
+            + 3 * cross(des_b2_dot, des_b3_ddot, dim=0) \
+            + cross(des_b2, des_b3_dddot, dim=0)
+        des_b1_ddddot = cross(des_b2_ddddot, des_b3, dim=0) \
+            + 4 * cross(des_b2_dddot, des_b3_dot, dim=0) \
+            + 6 * cross(des_b2_ddot, des_b3_ddot, dim=0) \
+            + 4 * cross(des_b2_dot, des_b3_dddot, dim=0) \
+            + cross(des_b2, des_b3_ddddot, dim=0)
+
+        des_b1 = des_b1 / torch.norm(des_b1)
+        des_b1_dot = des_b1_dot / torch.norm(des_b1_dot)
+        des_b1_ddot = des_b1_ddot / torch.norm(des_b1_ddot)
+        des_b1_dddot = des_b1_dddot / torch.norm(des_b1_dddot)
+        des_b1_ddddot = des_b1_ddddot / torch.norm(des_b1_ddddot)
 
         des_pose_Rwb = torch.concat([des_b1, des_b2, des_b3], dim=1)
         des_pose_Rwb_dot = torch.concat([des_b1_dot, des_b2_dot, des_b3_dot], dim=1)
         des_pose_Rwb_ddot = torch.concat([des_b1_ddot, des_b2_ddot, des_b3_ddot], dim=1)
+        des_pose_Rwb_dddot = torch.concat([des_b1_dddot, des_b2_dddot, des_b3_dddot], dim=1)
+        des_pose_Rwb_ddddot = torch.concat([des_b1_ddddot, des_b2_ddddot, des_b3_ddddot], dim=1)
 
         des_augular_vel = skew2vec(des_pose_Rwb.T @ des_pose_Rwb_dot)
         wedge_des_augular_vel = vec2skew(des_augular_vel.T)[0]
         des_augular_acc = skew2vec(des_pose_Rwb.T @ des_pose_Rwb_ddot
-                                   - wedge_des_augular_vel @ wedge_des_augular_vel)
+                                - wedge_des_augular_vel @ wedge_des_augular_vel)
+        des_augular_jerk = skew2vec(des_pose_Rwb.T @ des_pose_Rwb_dddot
+                                    - 3 * wedge_des_augular_vel @ vec2skew(des_augular_acc.T)[0])
+        des_augular_snap = skew2vec(des_pose_Rwb.T @ des_pose_Rwb_ddddot
+                                    - 4 * wedge_des_augular_vel @ vec2skew(des_augular_jerk.T)[0]
+                                    - 3 * vec2skew(des_augular_acc.T)[0] @ vec2skew(des_augular_acc.T)[0])
 
         M = - pose_pid.forward(self.compute_pose_error(pose_Rwb, des_pose_Rwb),
-                               angular_vel - pose_Rwb.T @ (des_pose_Rwb @ des_augular_vel)) \
-          + cross(angular_vel, self.J @ angular_vel, dim=0)
+                            angular_vel - pose_Rwb.T @ (des_pose_Rwb @ des_augular_vel)) \
+            + cross(angular_vel, self.J @ angular_vel, dim=0)
         temp_M = torch.squeeze(vec2skew(angular_vel.T)) \
-          @ (pose_Rwb.T @ des_pose_Rwb @ des_augular_vel \
-          - pose_Rwb.T @ des_pose_Rwb @ des_augular_acc)
+            @ (pose_Rwb.T @ des_pose_Rwb @ des_augular_vel \
+            - pose_Rwb.T @ des_pose_Rwb @ des_augular_acc \
+            - pose_Rwb.T @ des_pose_Rwb @ des_augular_jerk \
+            - pose_Rwb.T @ des_pose_Rwb @ des_augular_snap)
         M = (M - self.J @ temp_M).reshape(-1)
 
         zero_force_tensor = torch.tensor([0.], device=device)
         return torch.concat([torch.max(zero_force_tensor, thrust_des), M])
 
-def get_ref_states3(dt, N, traj_x, traj_y, traj_z, device):
+def get_ref_states(dt, N, traj_x, traj_y, traj_z, device):
     """
-    Generate the reference states based on the waypoint trajectory
+    Generate the reference states based on the piecewise polynomial trajectory
     """
-    ref_state = torch.zeros(N, 27, device=device)
+    ref_state = torch.zeros(N, 33, device=device)
     time = torch.arange(0, N, device=device) * dt
 
     num_waypoints = traj_x.shape[1] + 1
@@ -279,91 +325,10 @@ def get_ref_states3(dt, N, traj_x, traj_y, traj_z, device):
     ref_state[..., 21:24] = torch.tensor([[0., 0., 0.]]).view(1, -1)
     # b1 axis orientation ddot
     ref_state[..., 24:27] = torch.tensor([[0., 0., 0.]]).view(1, -1)
-
-    return ref_state
-def get_ref_states(dt, N, coeff_x, coeff_y, coeff_z, device):
-    """
-    Generate the reference states based on the piecewise trajectory coefficients
-    """
-    ref_state = torch.zeros(N, 24, device=device)
-    time = torch.arange(0, N, device=device) * dt
-
-    num_segments = coeff_x.shape[1] - 1
-    segment_duration = N // num_segments
-
-    for i in range(num_segments):
-        start_index = i * segment_duration
-        end_index = (i + 1) * segment_duration
-
-        t = time[start_index:end_index] - i * segment_duration * dt
-        t_pow = torch.stack([t ** j for j in range(6)], dim=-1)
-
-        x = torch.sum(coeff_x[:, i].unsqueeze(0) * t_pow, dim=-1)
-        y = torch.sum(coeff_y[:, i].unsqueeze(0) * t_pow, dim=-1)
-        z = torch.sum(coeff_z[:, i].unsqueeze(0) * t_pow, dim=-1)
-
-        ref_state[start_index:end_index, 0:3] = torch.stack([x, y, z], dim=-1)
-
-        dx = torch.sum(coeff_x[1:, i].unsqueeze(0) * t_pow[:, :-1] * torch.arange(1, 6, device=device).float(), dim=-1)
-        dy = torch.sum(coeff_y[1:, i].unsqueeze(0) * t_pow[:, :-1] * torch.arange(1, 6, device=device).float(), dim=-1)
-        dz = torch.sum(coeff_z[1:, i].unsqueeze(0) * t_pow[:, :-1] * torch.arange(1, 6, device=device).float(), dim=-1)
-
-        ref_state[start_index:end_index, 3:6] = torch.stack([dx, dy, dz], dim=-1)
-
-        ddx = torch.sum(coeff_x[2:, i].unsqueeze(0) * t_pow[:, :-2] * torch.arange(2, 6, device=device).float() * (torch.arange(1, 5, device=device).float()), dim=-1)
-        ddy = torch.sum(coeff_y[2:, i].unsqueeze(0) * t_pow[:, :-2] * torch.arange(2, 6, device=device).float() * (torch.arange(1, 5, device=device).float()), dim=-1)
-        ddz = torch.sum(coeff_z[2:, i].unsqueeze(0) * t_pow[:, :-2] * torch.arange(2, 6, device=device).float() * (torch.arange(1, 5, device=device).float()), dim=-1)
-
-        ref_state[start_index:end_index, 6:9] = torch.stack([ddx, ddy, ddz], dim=-1)
-
-        dddx = torch.sum(coeff_x[3:, i].unsqueeze(0) * t_pow[:, :-3] * torch.arange(3, 6, device=device).float() * (torch.arange(2, 5, device=device).float()) * (torch.arange(1, 4, device=device).float()), dim=-1)
-        dddy = torch.sum(coeff_y[3:, i].unsqueeze(0) * t_pow[:, :-3] * torch.arange(3, 6, device=device).float() * (torch.arange(2, 5, device=device).float()) * (torch.arange(1, 4, device=device).float()), dim=-1)
-        dddz = torch.sum(coeff_z[3:, i].unsqueeze(0) * t_pow[:, :-3] * torch.arange(3, 6, device=device).float() * (torch.arange(2, 5, device=device).float()) * (torch.arange(1, 4, device=device).float()), dim=-1)
-
-        ref_state[start_index:end_index, 9:12] = torch.stack([dddx, dddy, dddz], dim=-1)
-
-        ddddx = torch.sum(coeff_x[4:, i].unsqueeze(0) * t_pow[:, :-4] * torch.arange(4, 6, device=device).float() * (torch.arange(3, 5, device=device).float()) * (torch.arange(2, 4, device=device).float()) * (torch.arange(1, 3, device=device).float()), dim=-1)
-        ddddy = torch.sum(coeff_y[4:, i].unsqueeze(0) * t_pow[:, :-4] * torch.arange(4, 6, device=device).float() * (torch.arange(3, 5, device=device).float()) * (torch.arange(2, 4, device=device).float()) * (torch.arange(1, 3, device=device).float()), dim=-1)
-        ddddz = torch.sum(coeff_z[4:, i].unsqueeze(0) * t_pow[:, :-4] * torch.arange(4, 6, device=device).float() * (torch.arange(3, 5, device=device).float()) * (torch.arange(2, 4, device=device).float()) * (torch.arange(1, 3, device=device).float()), dim=-1)
-
-        ref_state[start_index:end_index, 12:15] = torch.stack([ddddx, ddddy, ddddz], dim=-1)
-
-    # b1 axis orientation
-    ref_state[..., 15:18] = torch.tensor([[1., 0., 0.]]).view(1, -1)
-    # b1 axis orientation dot
-    ref_state[..., 18:21] = torch.tensor([[0., 0., 0.]]).view(1, -1)
-    # b1 axis orientation ddot
-    ref_state[..., 21:24] = torch.tensor([[0., 0., 0.]]).view(1, -1)
-
-    return ref_state
-def get_ref_states1(dt, N, device):
-    """
-    Generate the circle trajectory with fixed heading orientation
-    """
-    ref_state = torch.zeros(N, 24, device=device)
-    time  = torch.arange(0, N, device=args.device) * dt
-    # position set points
-    ref_state[..., 0:3] = torch.stack(
-        [2*(1-torch.cos(time)), 2*torch.sin(time), 0.1*torch.sin(time)], dim=-1)
-    print(ref_state[...,0:3])
-    # velocity set points
-    ref_state[..., 3:6] = torch.stack(
-        [2*torch.sin(time), 2*torch.cos(time), 0.1*torch.cos(time)], dim=-1)
-    # acceleration set points
-    ref_state[..., 6:9] = torch.stack(
-        [2*torch.cos(time), -2*torch.sin(time), -0.1*torch.sin(time)], dim=-1)
-    # acceleration dot set points
-    ref_state[..., 9:12] = torch.stack(
-        [-2*torch.sin(time), -2*torch.cos(time), -0.1*torch.cos(time)], dim=-1)
-    # acceleration ddot set points
-    ref_state[..., 12:15] = torch.stack(
-        [-2*torch.cos(time), 2*torch.sin(time), 0.1*torch.sin(time)], dim=-1)
-    # b1 axis orientation
-    ref_state[..., 15:18] = torch.tensor([[1., 0., 0.]]).view(1, -1)
-    # b1 axis orientation dot
-    ref_state[..., 18:21] = torch.tensor([[0., 0., 0.]]).view(1, -1)
-    # b1 axis orientation ddot
-    ref_state[..., 21:24] = torch.tensor([[0., 0., 0.]]).view(1, -1)
+    # b1 axis orientation dddot
+    ref_state[..., 27:30] = torch.tensor([[0., 0., 0.]]).view(1, -1)
+    # b1 axis orientation ddddot
+    ref_state[..., 30:33] = torch.tensor([[0., 0., 0.]]).view(1, -1)
 
     return ref_state
 
@@ -387,57 +352,40 @@ if __name__ == "__main__":
     args = parser.parse_args(); print(args)
     os.makedirs(os.path.join(args.save), exist_ok=True)
 
-    N = 200   # Number of time steps
+    N = 10    # Number of time steps
     dt = 0.1
     # States: x, y, z, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz
     state = torch.zeros(N, 13, device=args.device)
     state[0][6] = 1
-    # coeff_x = torch.tensor([
-    #     [0.0000e+00, 5.8040e-03, 2.5949e+02],
-    #     [7.7716e-09, -2.2906e-02, -4.2303e+02],
-    #     [0.0000e+00, 3.6089e-02, 2.7567e+02],
-    #     [1.1060e+00, 1.0776e+00, -8.8660e+01],
-    #     [-5.9557e-01, -5.8444e-01, 1.4013e+01],
-    #     [8.0603e-02, 7.8859e-02, -8.7038e-01]
-    # ])
-    # coeff_y = torch.tensor([
-    #     [-3.5527e-09, -9.3668e-01, 1.1181e+02],
-    #     [-2.1316e-08, 3.6545e+00, -1.8016e+02],
-    #     [-1.3323e-09, -5.7032e+00, 1.1408e+02],
-    #     [-6.0732e-01, 3.8429e+00, -3.5159e+01],
-    #     [6.9566e-01, -1.0406e+00, 5.3045e+00],
-    #     [-1.7304e-01, 9.7934e-02, -3.1470e-01]
-    # ])
-    # coeff_z = torch.tensor([
-    #     [2.0000e+00, 7.4102e-01, 7.5327e+01],
-    #     [2.1316e-08, 4.9120e+00, -1.1669e+02],
-    #     [5.3291e-09, -7.6659e+00, 7.1579e+01],
-    #     [-1.7183e+00, 4.2636e+00, -2.1539e+01],
-    #     [1.3260e+00, -1.0079e+00, 3.1899e+00],
-    #     [-2.7772e-01, 8.6522e-02, -1.8647e-01]
-    # ])
-    coeff_x=torch.tensor([[ 0.0000e+00,  6.5232e-01,  1.3870e+00],
-        [-9.5843e-11, -4.1467e-01, -1.9037e+00],
-        [ 3.4694e-11,  1.0512e-01,  4.3171e-01],
-        [ 6.2791e-03, -7.0071e-03, -3.5137e-02],
-        [-7.1485e-04,  1.2242e-04,  1.2095e-03],
-        [ 2.1762e-05,  7.1450e-07, -1.5060e-05]])
-    coeff_y=torch.tensor([[ 0.0000e+00, -1.9523e+00,  3.8582e+00],
-        [ 1.3357e-10,  1.2411e+00, -3.7676e+00],
-        [-1.1048e-10, -3.1462e-01,  6.6529e-01],
-        [-4.4954e-03,  3.5269e-02, -4.5260e-02],
-        [ 8.4389e-04, -1.6620e-03,  1.3688e-03],
-        [-3.5246e-05,  2.7748e-05, -1.5459e-05]])
-    coeff_z=torch.tensor([[ 1.0000e+00,  9.5042e-01,  1.2968e-01],
-        [-1.3214e-13,  2.3292e-02,  2.2474e-01],
-        [ 1.3553e-14, -4.2199e-03, -2.2875e-02],
-        [ 6.2547e-07,  3.6783e-04,  1.1478e-03],
-        [ 1.3665e-08, -1.5425e-05, -2.8427e-05],
-        [-1.1481e-08,  2.4938e-07,  2.7832e-07]])
 
-    # ref_state = get_ref_states(dt, N, coeff_x, coeff_y, coeff_z, args.device)
-    ref_state = get_ref_states(dt, N, args.device)
-    time  = torch.arange(0, N, device=args.device) * dt
+    coeff_x = torch.tensor([
+        [0.0000e+00, 5.8040e-03, 2.5949e+02],
+        [7.7716e-09, -2.2906e-02, -4.2303e+02],
+        [0.0000e+00, 3.6089e-02, 2.7567e+02],
+        [1.1060e+00, 1.0776e+00, -8.8660e+01],
+        [-5.9557e-01, -5.8444e-01, 1.4013e+01],
+        [8.0603e-02, 7.8859e-02, -8.7038e-01]
+    ])
+    coeff_y = torch.tensor([
+        [-3.5527e-09, -9.3668e-01, 1.1181e+02],
+        [-2.1316e-08, 3.6545e+00, -1.8016e+02],
+        [-1.3323e-09, -5.7032e+00, 1.1408e+02],
+        [-6.0732e-01, 3.8429e+00, -3.5159e+01],
+        [6.9566e-01, -1.0406e+00, 5.3045e+00],
+        [-1.7304e-01, 9.7934e-02, -3.1470e-01]
+    ])
+    coeff_z = torch.tensor([
+        [2.0000e+00, 7.4102e-01, 7.5327e+01],
+        [2.1316e-08, 4.9120e+00, -1.1669e+02],
+        [5.3291e-09, -7.6659e+00, 7.1579e+01],
+        [-1.7183e+00, 4.2636e+00, -2.1539e+01],
+        [1.3260e+00, -1.0079e+00, 3.1899e+00],
+        [-2.7772e-01, 8.6522e-02, -1.8647e-01]
+    ])
+
+    ref_state = get_ref_states(dt, N, coeff_x, coeff_y, coeff_z, args.device)
+    time = torch.arange(0, N, device=args.device) * dt
+
     parameters = torch.ones(4, device=args.device) # kp, kv, kori, kw
     mass = torch.tensor(0.18, device=args.device)
     g = torch.tensor(9.81, device=args.device)
@@ -449,18 +397,20 @@ if __name__ == "__main__":
     model = MultiCopter(mass, g, inertia, dt).to(args.device)
 
     # Calculate trajectory
+    # for i in range(N - 1):
+    #     state[i + 1], _ = model(state[i], controller.forward(state[i], ref_state[i]))
     for i in range(N - 1):
-        state[i + 1], _ = model(state[i], controller.forward(state[i], ref_state[i]))
-
+        input = controller.forward(state[i], ref_state[i])
+        state[i + 1] = model.state_transition(state[i], input)
 
     # Create time plots to show dynamics
     f, ax = plt.subplots(nrows=3, sharex=True)
     subPlot(ax[0], time, state[:, 0], '-', ylabel='X position (m)', label='true')
-    subPlot(ax[0], time, ref_state[:, 0], '--', ylabel='X position (m)', label='sp')
+    # subPlot(ax[0], time, ref_state[:, 0], '--', ylabel='X position (m)', label='sp')
     subPlot(ax[1], time, state[:, 1], '-', ylabel='Y position (m)', label='true')
-    subPlot(ax[1], time, ref_state[:, 1], '--', ylabel='Y position (m)', label='sp')
+    # subPlot(ax[1], time, ref_state[:, 1], '--', ylabel='Y position (m)', label='sp')
     subPlot(ax[2], time, state[:, 2], '-', ylabel='Z position (m)', label='true')
-    subPlot(ax[2], time, ref_state[:, 2], '--', ylabel='Z position (m)', label='sp')
+    # subPlot(ax[2], time, ref_state[:, 2], '--', ylabel='Z position (m)', label='sp')
 
     ax[0].legend()
     ax[1].legend()

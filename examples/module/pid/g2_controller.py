@@ -228,105 +228,46 @@ class GeometricController(torch.nn.Module):
         zero_force_tensor = torch.tensor([0.], device=device)
         return torch.concat([torch.max(zero_force_tensor, thrust_des), M])
 
-def get_ref_states3(dt, N, traj_x, traj_y, traj_z, device):
-    """
-    Generate the reference states based on the waypoint trajectory
-    """
-    ref_state = torch.zeros(N, 27, device=device)
-    time = torch.arange(0, N, device=device) * dt
-
-    num_waypoints = traj_x.shape[1] + 1
-    num_segments = num_waypoints - 1
-    segment_duration = N // num_segments
-
-    for i in range(num_segments):
-        start_index = i * segment_duration
-        end_index = (i + 1) * segment_duration
-
-        t = time[start_index:end_index] - i * segment_duration * dt
-
-        x_pos, x_vel, x_acc, x_jerk, x_snap, x_crackle = traj_x[:, i]
-        y_pos, y_vel, y_acc, y_jerk, y_snap, y_crackle = traj_y[:, i]
-        z_pos, z_vel, z_acc, z_jerk, z_snap, z_crackle = traj_z[:, i]
-
-        ref_state[start_index:end_index, 0] = x_pos + x_vel * t + 0.5 * x_acc * t**2 + (1/6) * x_jerk * t**3 + (1/24) * x_snap * t**4 + (1/120) * x_crackle * t**5
-        ref_state[start_index:end_index, 1] = y_pos + y_vel * t + 0.5 * y_acc * t**2 + (1/6) * y_jerk * t**3 + (1/24) * y_snap * t**4 + (1/120) * y_crackle * t**5
-        ref_state[start_index:end_index, 2] = z_pos + z_vel * t + 0.5 * z_acc * t**2 + (1/6) * z_jerk * t**3 + (1/24) * z_snap * t**4 + (1/120) * z_crackle * t**5
-
-        ref_state[start_index:end_index, 3] = x_vel + x_acc * t + 0.5 * x_jerk * t**2 + (1/6) * x_snap * t**3 + (1/24) * x_crackle * t**4
-        ref_state[start_index:end_index, 4] = y_vel + y_acc * t + 0.5 * y_jerk * t**2 + (1/6) * y_snap * t**3 + (1/24) * y_crackle * t**4
-        ref_state[start_index:end_index, 5] = z_vel + z_acc * t + 0.5 * z_jerk * t**2 + (1/6) * z_snap * t**3 + (1/24) * z_crackle * t**4
-
-        ref_state[start_index:end_index, 6] = x_acc + x_jerk * t + 0.5 * x_snap * t**2 + (1/6) * x_crackle * t**3
-        ref_state[start_index:end_index, 7] = y_acc + y_jerk * t + 0.5 * y_snap * t**2 + (1/6) * y_crackle * t**3
-        ref_state[start_index:end_index, 8] = z_acc + z_jerk * t + 0.5 * z_snap * t**2 + (1/6) * z_crackle * t**3
-
-        ref_state[start_index:end_index, 9] = x_jerk + x_snap * t + 0.5 * x_crackle * t**2
-        ref_state[start_index:end_index, 10] = y_jerk + y_snap * t + 0.5 * y_crackle * t**2
-        ref_state[start_index:end_index, 11] = z_jerk + z_snap * t + 0.5 * z_crackle * t**2
-
-        ref_state[start_index:end_index, 12] = x_snap + x_crackle * t
-        ref_state[start_index:end_index, 13] = y_snap + y_crackle * t
-        ref_state[start_index:end_index, 14] = z_snap + z_crackle * t
-
-        ref_state[start_index:end_index, 15] = x_crackle
-        ref_state[start_index:end_index, 16] = y_crackle
-        ref_state[start_index:end_index, 17] = z_crackle
-
-    # b1 axis orientation
-    ref_state[..., 18:21] = torch.tensor([[1., 0., 0.]]).view(1, -1)
-    # b1 axis orientation dot
-    ref_state[..., 21:24] = torch.tensor([[0., 0., 0.]]).view(1, -1)
-    # b1 axis orientation ddot
-    ref_state[..., 24:27] = torch.tensor([[0., 0., 0.]]).view(1, -1)
-
-    return ref_state
-def get_ref_states(dt, N, coeff_x, coeff_y, coeff_z, device):
-    """
-    Generate the reference states based on the piecewise trajectory coefficients
-    """
+def get_ref_states4(dt, N, coeff_x, coeff_y, coeff_z, device):
     ref_state = torch.zeros(N, 24, device=device)
     time = torch.arange(0, N, device=device) * dt
 
-    num_segments = coeff_x.shape[1] - 1
-    segment_duration = N // num_segments
+    # Determine the number of waypoints based on the number of columns in coeff_x
+    num_waypoints = coeff_x.shape[1] + 1
 
-    for i in range(num_segments):
-        start_index = i * segment_duration
-        end_index = (i + 1) * segment_duration
+    # Calculate the number of time steps for each trajectory segment
+    segment_steps = N // (num_waypoints - 1)
 
-        t = time[start_index:end_index] - i * segment_duration * dt
-        t_pow = torch.stack([t ** j for j in range(6)], dim=-1)
+    for i in range(num_waypoints - 1):
+        segment_start = i * segment_steps
+        segment_end = (i + 1) * segment_steps
 
-        x = torch.sum(coeff_x[:, i].unsqueeze(0) * t_pow, dim=-1)
-        y = torch.sum(coeff_y[:, i].unsqueeze(0) * t_pow, dim=-1)
-        z = torch.sum(coeff_z[:, i].unsqueeze(0) * t_pow, dim=-1)
+        segment_time = time[segment_start:segment_end] - time[segment_start]
 
-        ref_state[start_index:end_index, 0:3] = torch.stack([x, y, z], dim=-1)
+        # Position set points
+        ref_state[segment_start:segment_end, 0] = coeff_x[0, i] * segment_time**5 + coeff_x[1, i] * segment_time**4 + coeff_x[2, i] * segment_time**3 + coeff_x[3, i] * segment_time**2 + coeff_x[4, i] * segment_time + coeff_x[5, i]
+        ref_state[segment_start:segment_end, 1] = coeff_y[0, i] * segment_time**5 + coeff_y[1, i] * segment_time**4 + coeff_y[2, i] * segment_time**3 + coeff_y[3, i] * segment_time**2 + coeff_y[4, i] * segment_time + coeff_y[5, i]
+        ref_state[segment_start:segment_end, 2] = coeff_z[0, i] * segment_time**5 + coeff_z[1, i] * segment_time**4 + coeff_z[2, i] * segment_time**3 + coeff_z[3, i] * segment_time**2 + coeff_z[4, i] * segment_time + coeff_z[5, i]
 
-        dx = torch.sum(coeff_x[1:, i].unsqueeze(0) * t_pow[:, :-1] * torch.arange(1, 6, device=device).float(), dim=-1)
-        dy = torch.sum(coeff_y[1:, i].unsqueeze(0) * t_pow[:, :-1] * torch.arange(1, 6, device=device).float(), dim=-1)
-        dz = torch.sum(coeff_z[1:, i].unsqueeze(0) * t_pow[:, :-1] * torch.arange(1, 6, device=device).float(), dim=-1)
+        # Velocity set points
+        ref_state[segment_start:segment_end, 3] = coeff_x[1, i] * segment_time**4 + coeff_x[2, i] * segment_time**3 + coeff_x[3, i] * segment_time**2 + coeff_x[4, i] * segment_time + coeff_x[5, i]
+        ref_state[segment_start:segment_end, 4] = coeff_y[1, i] * segment_time**4 + coeff_y[2, i] * segment_time**3 + coeff_y[3, i] * segment_time**2 + coeff_y[4, i] * segment_time + coeff_y[5, i]
+        ref_state[segment_start:segment_end, 5] = coeff_z[1, i] * segment_time**4 + coeff_z[2, i] * segment_time**3 + coeff_z[3, i] * segment_time**2 + coeff_z[4, i] * segment_time + coeff_z[5, i]
 
-        ref_state[start_index:end_index, 3:6] = torch.stack([dx, dy, dz], dim=-1)
+        # Acceleration set points
+        ref_state[segment_start:segment_end, 6] = coeff_x[2, i] * segment_time**3 + coeff_x[3, i] * segment_time**2 + coeff_x[4, i] * segment_time + coeff_x[5, i]
+        ref_state[segment_start:segment_end, 7] = coeff_y[2, i] * segment_time**3 + coeff_y[3, i] * segment_time**2 + coeff_y[4, i] * segment_time + coeff_y[5, i]
+        ref_state[segment_start:segment_end, 8] = coeff_z[2, i] * segment_time**3 + coeff_z[3, i] * segment_time**2 + coeff_z[4, i] * segment_time + coeff_z[5, i]
 
-        ddx = torch.sum(coeff_x[2:, i].unsqueeze(0) * t_pow[:, :-2] * torch.arange(2, 6, device=device).float() * (torch.arange(1, 5, device=device).float()), dim=-1)
-        ddy = torch.sum(coeff_y[2:, i].unsqueeze(0) * t_pow[:, :-2] * torch.arange(2, 6, device=device).float() * (torch.arange(1, 5, device=device).float()), dim=-1)
-        ddz = torch.sum(coeff_z[2:, i].unsqueeze(0) * t_pow[:, :-2] * torch.arange(2, 6, device=device).float() * (torch.arange(1, 5, device=device).float()), dim=-1)
+        # Jerk set points
+        ref_state[segment_start:segment_end, 9] = coeff_x[3, i] * segment_time**2 + coeff_x[4, i] * segment_time + coeff_x[5, i]
+        ref_state[segment_start:segment_end, 10] = coeff_y[3, i] * segment_time**2 + coeff_y[4, i] * segment_time + coeff_y[5, i]
+        ref_state[segment_start:segment_end, 11] = coeff_z[3, i] * segment_time**2 + coeff_z[4, i] * segment_time + coeff_z[5, i]
 
-        ref_state[start_index:end_index, 6:9] = torch.stack([ddx, ddy, ddz], dim=-1)
-
-        dddx = torch.sum(coeff_x[3:, i].unsqueeze(0) * t_pow[:, :-3] * torch.arange(3, 6, device=device).float() * (torch.arange(2, 5, device=device).float()) * (torch.arange(1, 4, device=device).float()), dim=-1)
-        dddy = torch.sum(coeff_y[3:, i].unsqueeze(0) * t_pow[:, :-3] * torch.arange(3, 6, device=device).float() * (torch.arange(2, 5, device=device).float()) * (torch.arange(1, 4, device=device).float()), dim=-1)
-        dddz = torch.sum(coeff_z[3:, i].unsqueeze(0) * t_pow[:, :-3] * torch.arange(3, 6, device=device).float() * (torch.arange(2, 5, device=device).float()) * (torch.arange(1, 4, device=device).float()), dim=-1)
-
-        ref_state[start_index:end_index, 9:12] = torch.stack([dddx, dddy, dddz], dim=-1)
-
-        ddddx = torch.sum(coeff_x[4:, i].unsqueeze(0) * t_pow[:, :-4] * torch.arange(4, 6, device=device).float() * (torch.arange(3, 5, device=device).float()) * (torch.arange(2, 4, device=device).float()) * (torch.arange(1, 3, device=device).float()), dim=-1)
-        ddddy = torch.sum(coeff_y[4:, i].unsqueeze(0) * t_pow[:, :-4] * torch.arange(4, 6, device=device).float() * (torch.arange(3, 5, device=device).float()) * (torch.arange(2, 4, device=device).float()) * (torch.arange(1, 3, device=device).float()), dim=-1)
-        ddddz = torch.sum(coeff_z[4:, i].unsqueeze(0) * t_pow[:, :-4] * torch.arange(4, 6, device=device).float() * (torch.arange(3, 5, device=device).float()) * (torch.arange(2, 4, device=device).float()) * (torch.arange(1, 3, device=device).float()), dim=-1)
-
-        ref_state[start_index:end_index, 12:15] = torch.stack([ddddx, ddddy, ddddz], dim=-1)
+        # Snap set points
+        ref_state[segment_start:segment_end, 12] = coeff_x[4, i] * segment_time + coeff_x[5, i]
+        ref_state[segment_start:segment_end, 13] = coeff_y[4, i] * segment_time + coeff_y[5, i]
+        ref_state[segment_start:segment_end, 14] = coeff_z[4, i] * segment_time + coeff_z[5, i]
 
     # b1 axis orientation
     ref_state[..., 15:18] = torch.tensor([[1., 0., 0.]]).view(1, -1)
@@ -336,28 +277,121 @@ def get_ref_states(dt, N, coeff_x, coeff_y, coeff_z, device):
     ref_state[..., 21:24] = torch.tensor([[0., 0., 0.]]).view(1, -1)
 
     return ref_state
-def get_ref_states1(dt, N, device):
-    """
-    Generate the circle trajectory with fixed heading orientation
-    """
+def get_ref_states(dt, N, coeff_x, coeff_y, coeff_z, device):
     ref_state = torch.zeros(N, 24, device=device)
-    time  = torch.arange(0, N, device=args.device) * dt
-    # position set points
-    ref_state[..., 0:3] = torch.stack(
-        [2*(1-torch.cos(time)), 2*torch.sin(time), 0.1*torch.sin(time)], dim=-1)
+    time = torch.arange(0, N, device=device) * dt
+
+    # Determine the number of waypoints based on the number of columns in coeff_x
+    num_waypoints = coeff_x.shape[1] + 1
+
+    # Calculate the number of time steps for each trajectory segment
+    segment_steps = N // (num_waypoints - 1)
+
+    for i in range(num_waypoints - 1):
+        segment_start = i * segment_steps
+        segment_end = (i + 1) * segment_steps
+
+        segment_time = time[segment_start:segment_end] - time[segment_start]
+
+        # Position set points
+        ref_state[segment_start:segment_end, 0] = coeff_x[0, i] * segment_time**5 + coeff_x[1, i] * segment_time**4 + coeff_x[2, i] * segment_time**3 + coeff_x[3, i] * segment_time**2 + coeff_x[4, i] * segment_time + coeff_x[5, i]
+        ref_state[segment_start:segment_end, 1] = coeff_y[0, i] * segment_time**5 + coeff_y[1, i] * segment_time**4 + coeff_y[2, i] * segment_time**3 + coeff_y[3, i] * segment_time**2 + coeff_y[4, i] * segment_time + coeff_y[5, i]
+        ref_state[segment_start:segment_end, 2] = coeff_z[0, i] * segment_time**5 + coeff_z[1, i] * segment_time**4 + coeff_z[2, i] * segment_time**3 + coeff_z[3, i] * segment_time**2 + coeff_z[4, i] * segment_time + coeff_z[5, i]
+
+        # Velocity set points
+        ref_state[segment_start:segment_end, 3] = 5 * coeff_x[0, i] * segment_time**4 + 4 * coeff_x[1, i] * segment_time**3 + 3 * coeff_x[2, i] * segment_time**2 + 2 * coeff_x[3, i] * segment_time + coeff_x[4, i]
+        ref_state[segment_start:segment_end, 4] = 5 * coeff_y[0, i] * segment_time**4 + 4 * coeff_y[1, i] * segment_time**3 + 3 * coeff_y[2, i] * segment_time**2 + 2 * coeff_y[3, i] * segment_time + coeff_y[4, i]
+        ref_state[segment_start:segment_end, 5] = 5 * coeff_z[0, i] * segment_time**4 + 4 * coeff_z[1, i] * segment_time**3 + 3 * coeff_z[2, i] * segment_time**2 + 2 * coeff_z[3, i] * segment_time + coeff_z[4, i]
+
+        # Acceleration set points
+        ref_state[segment_start:segment_end, 6] = 20 * coeff_x[0, i] * segment_time**3 + 12 * coeff_x[1, i] * segment_time**2 + 6 * coeff_x[2, i] * segment_time + 2 * coeff_x[3, i]
+        ref_state[segment_start:segment_end, 7] = 20 * coeff_y[0, i] * segment_time**3 + 12 * coeff_y[1, i] * segment_time**2 + 6 * coeff_y[2, i] * segment_time + 2 * coeff_y[3, i]
+        ref_state[segment_start:segment_end, 8] = 20 * coeff_z[0, i] * segment_time**3 + 12 * coeff_z[1, i] * segment_time**2 + 6 * coeff_z[2, i] * segment_time + 2 * coeff_z[3, i]
+
+        # Jerk set points
+        ref_state[segment_start:segment_end, 9] = 60 * coeff_x[0, i] * segment_time**2 + 24 * coeff_x[1, i] * segment_time + 6 * coeff_x[2, i]
+        ref_state[segment_start:segment_end, 10] = 60 * coeff_y[0, i] * segment_time**2 + 24 * coeff_y[1, i] * segment_time + 6 * coeff_y[2, i]
+        ref_state[segment_start:segment_end, 11] = 60 * coeff_z[0, i] * segment_time**2 + 24 * coeff_z[1, i] * segment_time + 6 * coeff_z[2, i]
+
+        # Snap set points
+        ref_state[segment_start:segment_end, 12] = 120 * coeff_x[0, i] * segment_time + 24 * coeff_x[1, i]
+        ref_state[segment_start:segment_end, 13] = 120 * coeff_y[0, i] * segment_time + 24 * coeff_y[1, i]
+        ref_state[segment_start:segment_end, 14] = 120 * coeff_z[0, i] * segment_time + 24 * coeff_z[1, i]
+
+    # b1 axis orientation
+    ref_state[..., 15:18] = torch.tensor([[1., 0., 0.]]).view(1, -1)
+    # b1 axis orientation dot
+    ref_state[..., 18:21] = torch.tensor([[0., 0., 0.]]).view(1, -1)
+    # b1 axis orientation ddot
+    ref_state[..., 21:24] = torch.tensor([[0., 0., 0.]]).view(1, -1)
+
+    return ref_state
+def get_ref_states2(dt, N, coeff_x, coeff_y, coeff_z, device):
+    ref_state = torch.zeros(N, 24, device=device)
+    time = torch.arange(0, N, device=device) * dt
+
+    # Position set points
+    ref_state[..., 0] = coeff_x[5, 0] * time**5 + coeff_x[4, 0] * time**4 + coeff_x[3, 0] * time**3 + coeff_x[2, 0] * time**2 + coeff_x[1, 0] * time + coeff_x[0, 0]
+    ref_state[..., 1] = coeff_y[5, 0] * time**5 + coeff_y[4, 0] * time**4 + coeff_y[3, 0] * time**3 + coeff_y[2, 0] * time**2 + coeff_y[1, 0] * time + coeff_y[0, 0]
+    ref_state[..., 2] = coeff_z[5, 0] * time**5 + coeff_z[4, 0] * time**4 + coeff_z[3, 0] * time**3 + coeff_z[2, 0] * time**2 + coeff_z[1, 0] * time + coeff_z[0, 0]
+
+    # Velocity set points
+    ref_state[..., 3] = coeff_x[5, 1] * time**5 + coeff_x[4, 1] * time**4 + coeff_x[3, 1] * time**3 + coeff_x[2, 1] * time**2 + coeff_x[1, 1] * time + coeff_x[0, 1]
+    ref_state[..., 4] = coeff_y[5, 1] * time**5 + coeff_y[4, 1] * time**4 + coeff_y[3, 1] * time**3 + coeff_y[2, 1] * time**2 + coeff_y[1, 1] * time + coeff_y[0, 1]
+    ref_state[..., 5] = coeff_z[5, 1] * time**5 + coeff_z[4, 1] * time**4 + coeff_z[3, 1] * time**3 + coeff_z[2, 1] * time**2 + coeff_z[1, 1] * time + coeff_z[0, 1]
+
+    # Acceleration set points
+    ref_state[..., 6] = coeff_x[5, 2] * time**5 + coeff_x[4, 2] * time**4 + coeff_x[3, 2] * time**3 + coeff_x[2, 2] * time**2 + coeff_x[1, 2] * time + coeff_x[0, 2]
+    ref_state[..., 7] = coeff_y[5, 2] * time**5 + coeff_y[4, 2] * time**4 + coeff_y[3, 2] * time**3 + coeff_y[2, 2] * time**2 + coeff_y[1, 2] * time + coeff_y[0, 2]
+    ref_state[..., 8] = coeff_z[5, 2] * time**5 + coeff_z[4, 2] * time**4 + coeff_z[3, 2] * time**3 + coeff_z[2, 2] * time**2 + coeff_z[1, 2] * time + coeff_z[0, 2]
+
+    # Jerk set points
+    ref_state[..., 9] = coeff_x[5, 3] * time**5 + coeff_x[4, 3] * time**4 + coeff_x[3, 3] * time**3 + coeff_x[2, 3] * time**2 + coeff_x[1, 3] * time + coeff_x[0, 3]
+    ref_state[..., 10] = coeff_y[5, 3] * time**5 + coeff_y[4, 3] * time**4 + coeff_y[3, 3] * time**3 + coeff_y[2, 3] * time**2 + coeff_y[1, 3] * time + coeff_y[0, 3]
+    ref_state[..., 11] = coeff_z[5, 3] * time**5 + coeff_z[4, 3] * time**4 + coeff_z[3, 3] * time**3 + coeff_z[2, 3] * time**2 + coeff_z[1, 3] * time + coeff_z[0, 3]
+
+    # Snap set points
+    ref_state[..., 12] = coeff_x[5, 4] * time**5 + coeff_x[4, 4] * time**4 + coeff_x[3, 4] * time**3 + coeff_x[2, 4] * time**2 + coeff_x[1, 4] * time + coeff_x[0, 4]
+    ref_state[..., 13] = coeff_y[5, 4] * time**5 + coeff_y[4, 4] * time**4 + coeff_y[3, 4] * time**3 + coeff_y[2, 4] * time**2 + coeff_y[1, 4] * time + coeff_y[0, 4]
+    ref_state[..., 14] = coeff_z[5, 4] * time**5 + coeff_z[4, 4] * time**4 + coeff_z[3, 4] * time**3 + coeff_z[2, 4] * time**2 + coeff_z[1, 4] * time + coeff_z[0, 4]
+
+    # b1 axis orientation
+    ref_state[..., 15:18] = torch.tensor([[1., 0., 0.]]).view(1, -1)
+    # b1 axis orientation dot
+    ref_state[..., 18:21] = torch.tensor([[0., 0., 0.]]).view(1, -1)
+    # b1 axis orientation ddot
+    ref_state[..., 21:24] = torch.tensor([[0., 0., 0.]]).view(1, -1)
+
+    return ref_state
+def get_ref_states1(dt, N, coeff_x, coeff_y, coeff_z,device):
+    ref_state = torch.zeros(N, 24, device=device)
+    time = torch.arange(0, N, device=args.device) * dt
+    # print(coeff_x[1,0])
+    # Position set points
+    ref_state[..., 0] = coeff_x[0, 0] * time**5 + coeff_x[1, 0] * time**4 + coeff_x[2, 0] * time**3 + coeff_x[3, 0] * time**2 + coeff_x[4, 0] * time + coeff_x[5, 0]
+    ref_state[..., 1] = coeff_y[0, 0] * time**5 + coeff_y[1, 0] * time**4 + coeff_y[2, 0] * time**3 + coeff_y[3, 0] * time**2 + coeff_y[4, 0] * time + coeff_y[5, 0]
+    ref_state[..., 2] = coeff_z[0, 0] * time**5 + coeff_z[1, 0] * time**4 + coeff_z[2, 0] * time**3 + coeff_z[3, 0] * time**2 + coeff_z[4, 0] * time + coeff_z[5, 0]
     print(ref_state[...,0:3])
-    # velocity set points
-    ref_state[..., 3:6] = torch.stack(
-        [2*torch.sin(time), 2*torch.cos(time), 0.1*torch.cos(time)], dim=-1)
-    # acceleration set points
-    ref_state[..., 6:9] = torch.stack(
-        [2*torch.cos(time), -2*torch.sin(time), -0.1*torch.sin(time)], dim=-1)
-    # acceleration dot set points
-    ref_state[..., 9:12] = torch.stack(
-        [-2*torch.sin(time), -2*torch.cos(time), -0.1*torch.cos(time)], dim=-1)
-    # acceleration ddot set points
-    ref_state[..., 12:15] = torch.stack(
-        [-2*torch.cos(time), 2*torch.sin(time), 0.1*torch.sin(time)], dim=-1)
+    # Velocity set points
+    ref_state[..., 3] = 5 * coeff_x[0, 0] * time**4 + 4 * coeff_x[1, 0] * time**3 + 3 * coeff_x[2, 0] * time**2 + 2 * coeff_x[3, 0] * time + coeff_x[4, 0]
+    ref_state[..., 4] = 5 * coeff_y[0, 0] * time**4 + 4 * coeff_y[1, 0] * time**3 + 3 * coeff_y[2, 0] * time**2 + 2 * coeff_y[3, 0] * time + coeff_y[4, 0]
+    ref_state[..., 5] = 5 * coeff_z[0, 0] * time**4 + 4 * coeff_z[1, 0] * time**3 + 3 * coeff_z[2, 0] * time**2 + 2 * coeff_z[3, 0] * time + coeff_z[4, 0]
+
+    # Acceleration set points
+    ref_state[..., 6] = 20 * coeff_x[0, 0] * time**3 + 12 * coeff_x[1, 0] * time**2 + 6 * coeff_x[2, 0] * time + 2 * coeff_x[3, 0]
+    ref_state[..., 7] = 20 * coeff_y[0, 0] * time**3 + 12 * coeff_y[1, 0] * time**2 + 6 * coeff_y[2, 0] * time + 2 * coeff_y[3, 0]
+    ref_state[..., 8] = 20 * coeff_z[0, 0] * time**3 + 12 * coeff_z[1, 0] * time**2 + 6 * coeff_z[2, 0] * time + 2 * coeff_z[3, 0]
+
+    # Jerk set points
+    ref_state[..., 9] = 60 * coeff_x[0, 0] * time**2 + 24 * coeff_x[1, 0] * time + 6 * coeff_x[2, 0]
+    ref_state[..., 10] = 60 * coeff_y[0, 0] * time**2 + 24 * coeff_y[1, 0] * time + 6 * coeff_y[2, 0]
+    ref_state[..., 11] = 60 * coeff_z[0, 0] * time**2 + 24 * coeff_z[1, 0] * time + 6 * coeff_z[2, 0]
+
+    # Snap set points
+    ref_state[..., 12] = 120 * coeff_x[0, 0] * time + 24 * coeff_x[1, 0]
+    ref_state[..., 13] = 120 * coeff_y[0, 0] * time + 24 * coeff_y[1, 0]
+    ref_state[..., 14] = 120 * coeff_z[0, 0] * time + 24 * coeff_z[1, 0]
+
     # b1 axis orientation
     ref_state[..., 15:18] = torch.tensor([[1., 0., 0.]]).view(1, -1)
     # b1 axis orientation dot
@@ -387,7 +421,7 @@ if __name__ == "__main__":
     args = parser.parse_args(); print(args)
     os.makedirs(os.path.join(args.save), exist_ok=True)
 
-    N = 200   # Number of time steps
+    N = 200  # Number of time steps
     dt = 0.1
     # States: x, y, z, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz
     state = torch.zeros(N, 13, device=args.device)
@@ -435,8 +469,8 @@ if __name__ == "__main__":
         [ 1.3665e-08, -1.5425e-05, -2.8427e-05],
         [-1.1481e-08,  2.4938e-07,  2.7832e-07]])
 
-    # ref_state = get_ref_states(dt, N, coeff_x, coeff_y, coeff_z, args.device)
-    ref_state = get_ref_states(dt, N, args.device)
+    ref_state = get_ref_states(dt, N, coeff_x, coeff_y, coeff_z, args.device)
+    # ref_state = get_ref_states(dt, N, args.device)
     time  = torch.arange(0, N, device=args.device) * dt
     parameters = torch.ones(4, device=args.device) # kp, kv, kori, kw
     mass = torch.tensor(0.18, device=args.device)
